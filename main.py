@@ -1,11 +1,11 @@
+from array import array
 import math
 import os
-import pickle
 import random
-import socket
 import sys
 
 import pygame
+import moderngl
 
 import joysticks
 
@@ -15,6 +15,14 @@ pygame.init()
 def resource_path(relative_path):
     base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
+
+
+def surf_to_texture(surf: pygame.Surface):
+    tex = CTX.texture(surf.get_size(), 4)
+    tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+    tex.swizzle = 'BGRA'
+    tex.write(surf.get_view('1'))
+    return tex
 
 
 def hsv_to_rgb(h, s, v):  # Shamelessly stolen code
@@ -86,7 +94,7 @@ class Pwr_up(Entity):
                 del self
                 return
         else:
-            SCREEN.blit(self.sprite, (self.rect.x, self.rect.y))
+            DISPLAY.blit(self.sprite, (self.rect.x, self.rect.y))
 
 
 class Invincibility(Pwr_up):
@@ -119,7 +127,7 @@ class Missle(Entity):
                 del self
             else:
                 self.rect.x += (int(self.rotation < 0) * 2 - 1) * self.speed
-                SCREEN.blit(self.sprite, (self.rect.x, self.rect.y))
+                DISPLAY.blit(self.sprite, (self.rect.x, self.rect.y))
         else:
             missles.remove(self)
             del self
@@ -194,23 +202,34 @@ class Player(Entity):
                 int((math.sin(pygame.time.get_ticks() / 300) + 1.5) * 102)
             )
         # blit-ing v
-        SCREEN.blit(post_sprite, (self.rect.x, self.rect.y))
+        DISPLAY.blit(post_sprite, (self.rect.x, self.rect.y))
+
+
+def open_gl_flip():
+    frame_tex = surf_to_texture(DISPLAY)
+    frame_tex.use(0)
+    PROGRAM['tex'] = 0
+    RENDER_OBJECT.render(mode=moderngl.TRIANGLE_STRIP)
+
+    pygame.display.flip()
+
+    frame_tex.release()  # Eww memory managment?
 
 
 def win(who, FONT):
-    SCREEN.blit(
+    DISPLAY.blit(
         pygame.font.Font.render(FONT, f"{who} wins!", True, (255, 155, 155)),
         (
             WIDTH / 2 - (pygame.font.Font.size(FONT, f"{who} wins!")[0] / 2),
             HEIGHT / 2 - (pygame.font.Font.size(FONT, f"{who} wins!")[1] / 2),
         ),
     )
-    pygame.display.flip()
+    open_gl_flip()
     [CLOCK.tick(60) for frame in range(180)]  # Just stop for three seconds
     quit()
 
 
-def main_pt2(s=None, conn=None):
+def main():
     global lvl_elements, missles, ships, pwr_ups
     ships = []
     pwr_ups = []
@@ -242,14 +261,6 @@ def main_pt2(s=None, conn=None):
             HEIGHT // 2,
             resource_path("assets/ship-p2.png"),
             {
-                pygame.K_w: (0, -1),
-                pygame.K_a: (-1, 0),
-                pygame.K_s: (0, 1),
-                pygame.K_d: (1, 0),
-                pygame.K_e: "fire",
-            }
-            if is_online
-            else {
                 pygame.K_UP: (0, -1),
                 pygame.K_LEFT: (-1, 0),
                 pygame.K_DOWN: (0, 1),
@@ -303,251 +314,57 @@ def main_pt2(s=None, conn=None):
         if pygame.joystick.get_count() > 0:
             pressed.append(joysticks.to_key(joys))
 
-        # Network connectivity lol
-        if is_online:
-            if is_client:
-                # Serialize and send ship & missles
-                s.sendall(
-                    pickle.dumps(
-                        (
-                            (ships[0].rect.x, ships[0].rect.y),
-                            [
-                                (missle.rect.x, missle.rect.y)
-                                for missle in missles
-                                if missle.team == ships[0]
-                            ],
-                        )
-                    )
-                )
-                # Receive and deserialize the server data
-                recived = pickle.loads(s.recv(1024))
-            else:
-                # Receive and deserialize the client data
-                recived = pickle.loads(conn.recv(1024))
-                # Serialize and send ship & missles
-                conn.sendall(
-                    pickle.dumps(
-                        (
-                            (ships[0].rect.x, ships[0].rect.y),
-                            [
-                                (missle.rect.x, missle.rect.y)
-                                for missle in missles
-                                if missle.team == ships[0]
-                            ],
-                        )
-                    )
-                )
-
         # Start rendering stuff
-        SCREEN.blit(background, (0, 0))
-        ships[0].update(pressed)
-        if is_online:
-            missles = [missle for missle in missles if missle.team == ships[0]] + [
-                Missle(
-                    x_transform(i[0]),
-                    i[1],
-                    ships[1].sprite,
-                    ships[1],
-                    ships[1].enemy,
-                    rotation=ships[1].rotation,
-                    size=50,
-                )
-                for i in recived[1]
-            ]
-            ships[1].update([], (x_transform(recived[0][0]), recived[0][1]))
-        else:
-            ships[1].update(pressed)
+        DISPLAY.blit(background, (0, 0))
+        [ship.update(pressed) for ship in ships]
         for to_update in missles + pwr_ups:
             to_update.update()
         for lvl_element in lvl_elements:
-            pygame.draw.rect(SCREEN, hsv_to_rgb(rgb / 360, 1, 1), lvl_element)
+            pygame.draw.rect(DISPLAY, hsv_to_rgb(rgb / 360, 1, 1), lvl_element)
         # Do text shenanigans / check for win
         if ships[0].score > 9:
             win("P1", FONT)
         if ships[1].score > 9:
             win("P2", FONT)
-        SCREEN.blit(
+        DISPLAY.blit(
             pygame.font.Font.render(FONT, str(ships[0].score), True, (255, 155, 155)),
             (30, 120),
         )
-        SCREEN.blit(
+        DISPLAY.blit(
             pygame.font.Font.render(FONT, str(ships[1].score), True, (255, 155, 155)),
             (WIDTH - (30 + pygame.font.Font.size(FONT, str(ships[1].score))[0]), 120),
         )
 
         # Render
-        pygame.display.flip()
-        # Fps stuff
-        CLOCK.tick(60)
+        open_gl_flip()
+
+        CLOCK.tick(60)  # FPS Limit
         pygame.display.set_caption(f"Neo-space fps:{round(CLOCK.get_fps())}")
-
-
-def main_pt1():
-    global WIDTH, HEIGHT
-    user_text = ""
-    temp_running = True
-    while temp_running:
-        SCREEN.fill((0, 0, 0))
-        if is_client:
-            SCREEN.blit(
-                pygame.font.Font.render(FONT, user_text, True, (255, 155, 155)),
-                (
-                    WIDTH / 2 - (pygame.font.Font.size(FONT, user_text)[0] / 2),
-                    HEIGHT / 2,
-                ),
-            )
-            SCREEN.blit(
-                pygame.font.Font.render(
-                    FONT, "Please type in the hosts IP!", True, (255, 155, 155)
-                ),
-                (
-                    WIDTH / 2
-                    - (
-                        pygame.font.Font.size(FONT, "Please type in the hosts IP!")[0]
-                        / 2
-                    ),
-                    HEIGHT / 2
-                    - (pygame.font.Font.size(FONT, "Please type in the hosts IP!")[1]),
-                ),
-            )
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    exit()
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_BACKSPACE:
-                        user_text = user_text[:-1]
-                    elif event.key == pygame.K_RETURN:
-                        HOST = user_text
-                        temp_running = False
-                    else:
-                        user_text += event.unicode
-        else:
-            SCREEN.fill((0, 0, 0))
-            SCREEN.blit(
-                pygame.font.Font.render(
-                    FONT, "Waiting for other player!!", True, (255, 155, 155)
-                ),
-                (
-                    WIDTH / 2
-                    - (pygame.font.Font.size(FONT, "Waiting for other player!")[0] / 2),
-                    HEIGHT / 2
-                    - (pygame.font.Font.size(FONT, "Waiting for other player!")[1] / 2),
-                ),
-            )
-            HOST = "0.0.0.0"
-            temp_running = False
-        pygame.display.flip()
-        CLOCK.tick(60)
-        pygame.display.set_caption(f"Neo-space fps:{round(CLOCK.get_fps())}")
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        if is_client:
-            s.connect((HOST, PORT))
-            # Perform screen size compatiablility stuff
-            s.sendall(
-                pickle.dumps(
-                    (pygame.display.Info().current_w, pygame.display.Info().current_h)
-                )
-            )
-            recived = pickle.loads(
-                s.recv(1024)
-            )  # Receive and deserialize the server data
-            WIDTH, HEIGHT = (
-                min(pygame.display.Info().current_w, recived[0]),
-                min(pygame.display.Info().current_h, recived[1]),
-            )
-            main_pt2(s)
-        else:
-            s.bind((HOST, PORT))
-            s.listen()
-            conn, addr = s.accept()
-            with conn:
-                print(f"Connected by {addr}")
-                # Perform screen size compatiablility stuff
-                recived = pickle.loads(
-                    conn.recv(1024)
-                )  # Receive and deserialize the client data
-                conn.sendall(
-                    pickle.dumps(
-                        (
-                            pygame.display.Info().current_w,
-                            pygame.display.Info().current_h,
-                        )
-                    )
-                )
-                WIDTH, HEIGHT = (
-                    min(pygame.display.Info().current_w, recived[0]),
-                    min(pygame.display.Info().current_h, recived[1]),
-                )
-                main_pt2(s, conn)
-
-
-def menu():
-    global is_client, is_online, HOST
-    SCREEN.fill((0, 0, 0))
-    SCREEN.blit(
-        pygame.font.Font.render(
-            FONT, "Local will auto start after 5 seconds ", True, (255, 155, 155)
-        ),
-        (
-            WIDTH / 2
-            - pygame.font.Font.size(FONT, "Local will auto start after 5 seconds")[0]
-            / 2,
-            5,
-        ),
-    )
-    SCREEN.blit(
-        pygame.font.Font.render(
-            FONT, "Press L to play locally!", True, (255, 155, 155)
-        ),
-        (
-            WIDTH / 2 - pygame.font.Font.size(FONT, "Press L to play locally!")[0] / 2,
-            HEIGHT / 2 - pygame.font.Font.size(FONT, "Press C to connect!")[1] * 1.5,
-        ),
-    )
-    SCREEN.blit(
-        pygame.font.Font.render(FONT, "Press C to connect!", True, (255, 155, 155)),
-        (
-            WIDTH / 2 - pygame.font.Font.size(FONT, "Press C to connect!")[0] / 2,
-            HEIGHT / 2 - pygame.font.Font.size(FONT, "Press C to connect!")[1] / 2,
-        ),
-    )
-    SCREEN.blit(
-        pygame.font.Font.render(FONT, "Press S to host!", True, (255, 155, 155)),
-        (
-            WIDTH / 2 - pygame.font.Font.size(FONT, "Press S to host!")[0] / 2,
-            HEIGHT / 2 + pygame.font.Font.size(FONT, "Press C to connect!")[1] / 2,
-        ),
-    )
-    pygame.display.flip()
-    pygame.display.set_caption(f"Neo-space")
-    is_online = True
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                exit()
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_s:
-                    is_client = False
-                    main_pt1()
-                elif event.key == pygame.K_c:
-                    is_client = True
-                    main_pt1()
-                elif event.key == pygame.K_l:
-                    is_online = False
-                    main_pt2()
-        if pygame.time.get_ticks() > 5000:
-            is_online = False
-            main_pt2()
 
 
 if __name__ == "__main__":
     pygame.mouse.set_visible(False)
     WIDTH, HEIGHT = (pygame.display.Info().current_w, pygame.display.Info().current_h)
-    SCREEN = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+    SCREEN = pygame.display.set_mode((WIDTH, HEIGHT), pygame.OPENGL | pygame.DOUBLEBUF)
+    DISPLAY = pygame.Surface((WIDTH, HEIGHT))
     CLOCK = pygame.time.Clock()
     FONT = pygame.font.Font(resource_path("assets/04B_30__.ttf"), 50)
     MAX_PROJECTILES = 3
     PORT = 24681
     missles = []
     joys = []
-    menu()
+    CTX = moderngl.create_context()
+    QUAD_BUFFER = CTX.buffer(data=array('f', [
+        # Pos and UV coords respectively
+        -1.0, 1.0, 0.0, 0.0,  # Topleft
+        1.0, 1.0, 1.0, 0.0,  # Topright
+        -1.0, -1.0, 0.0, 1.0,  # Bottomleft
+        1.0, -1.0, 1.0, 1.0,  # Bottomright
+    ]))
+    with open(resource_path('vert_shader.glsl')) as file:
+        VERT_SHADER = file.read()
+    with open(resource_path('frag_shader.glsl')) as file:
+        FRAG_SHADER = file.read()
+    PROGRAM = CTX.program(vertex_shader=VERT_SHADER, fragment_shader=FRAG_SHADER)
+    RENDER_OBJECT = CTX.vertex_array(PROGRAM, [(QUAD_BUFFER, '2f 2f', 'vert', 'texcoord')])
+    main()
